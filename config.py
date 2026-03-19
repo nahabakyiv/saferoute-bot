@@ -30,4 +30,4 @@ DEFAULT_CITY = os.getenv("DEFAULT_CITY", "Київ")
 COUNTRY_CODE = "ua"
 
 # --- Інтервал оновлення точок (хвилини) ---
-UPDATE_INTERVAL_MINUTES = 30
+UPDATE_INTERVAL_MINUTES = 3
