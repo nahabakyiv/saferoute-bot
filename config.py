@@ -31,3 +31,7 @@ COUNTRY_CODE = "ua"
 
 # --- Інтервал оновлення точок (хвилини) ---
 UPDATE_INTERVAL_MINUTES = 3
+
+# --- Anthropic API (для парсингу адрес з повідомлень) ---
+# Безкоштовно: console.anthropic.com → API Keys
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
