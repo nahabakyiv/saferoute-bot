@@ -42,20 +42,56 @@ def maps_link(lat, lng) -> str:
     return f"https://maps.google.com/?q={lat},{lng}"
 
 
-def extract_addresses(text: str) -> list[str]:
-    results = []
-    for m in re.finditer(r'\b(4[5-9]\.\d{3,6})[,\s]+(2[5-9]\.\d{3,6})\b', text):
-        results.append(f"COORD:{m.group(1)},{m.group(2)}")
-    street_re = re.compile(
-        r'(?:вул(?:иця)?\.?\s*|просп(?:ект)?\.?\s*|пров(?:улок)?\.?\s*'
-        r'|бульв(?:ар)?\.?\s*|пл(?:оща)?\.?\s*|шосе\s*|набережна\s*)'
-        r'([А-ЯҐЄІЇа-яґєії\'\-\s]{3,40}?)'
-        r'[,\s]+(\d+[А-ЯҐЄІЇа-яґєії/\-]*)',
-        re.IGNORECASE
-    )
-    for m in street_re.finditer(text):
-        results.append(m.group(0).strip())
-    return results
+async def extract_addresses_ai(messages: list[str]) -> list[str]:
+    """Використовує Claude AI щоб витягти адреси з повідомлень каналу."""
+    if not messages:
+        return []
+
+    # Беремо тільки останні повідомлення щоб не перевантажувати
+    sample = "\n---\n".join(messages[:50])
+
+    prompt = f"""Ти аналізуєш повідомлення з Telegram каналу про небезпечні місця в Києві (блокпости, облави тощо).
+
+Витягни ВСІ згадані місця/адреси з тексту нижче.
+Повертай ТІЛЬКИ JSON масив рядків, без пояснень.
+Кожен рядок — це конкретне місце або адреса українською або російською.
+Якщо місце нечітке (наприклад "там", "тут") — пропускай.
+Додавай "Київ" якщо місто не вказано явно.
+
+Приклади правильного виводу:
+["вулиця Електриків, Київ", "метро Олімпійська, Київ", "Борщагівська вулиця, Київ", "проспект Вернадського, Київ"]
+
+Повідомлення:
+{sample}
+
+Відповідай ТІЛЬКИ JSON масивом, без коментарів."""
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            resp = await session.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": config.ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 1000,
+                    "messages": [{"role": "user", "content": prompt}]
+                },
+                timeout=aiohttp.ClientTimeout(total=30)
+            )
+            data = await resp.json()
+            text = data["content"][0]["text"].strip()
+            # Парсимо JSON
+            import json
+            addresses = json.loads(text)
+            log.info(f"AI витягнув {len(addresses)} адрес")
+            return addresses
+    except Exception as e:
+        log.error(f"AI extract error: {e}")
+        return []
 
 
 async def geocode(address: str) -> tuple[float, float] | None:
@@ -103,16 +139,12 @@ async def job_update_points(context: ContextTypes.DEFAULT_TYPE):
     collected: list[dict] = []
     for channel in config.CHANNELS:
         messages = await fetch_channel_messages(channel)
-        for msg in messages:
-            for addr in extract_addresses(msg):
-                if addr.startswith("COORD:"):
-                    lat, lng = map(float, addr[6:].split(","))
-                    collected.append({"lat": lat, "lng": lng, "address": f"{lat:.4f},{lng:.4f}", "source": channel})
-                else:
-                    coords = await geocode(addr)
-                    if coords:
-                        collected.append({"lat": coords[0], "lng": coords[1], "address": addr, "source": channel})
-                    await asyncio.sleep(1.1)
+        addresses = await extract_addresses_ai(messages)
+        for addr in addresses:
+            coords = await geocode(addr)
+            if coords:
+                collected.append({"lat": coords[0], "lng": coords[1], "address": addr, "source": channel})
+            await asyncio.sleep(1.1)
     unique: list[dict] = []
     for pt in collected:
         if not any(haversine_meters(pt["lat"], pt["lng"], ex["lat"], ex["lng"]) < 30 for ex in unique):
